@@ -150,8 +150,18 @@ function App() {
                   <button
                     key={c.id}
                     onClick={() => runUntangle(c.label)}
+                    title={c.label}
                     className="text-sm rounded-full px-4 py-2 transition-opacity hover:opacity-70"
-                    style={{ fontFamily: "'Inter', sans-serif", border: '1px solid hsl(var(--foreground) / 0.15)', color: 'hsl(var(--foreground))' }}
+                    style={{
+                      fontFamily: "'Inter', sans-serif",
+                      border: '1px solid hsl(var(--foreground) / 0.15)',
+                      color: 'hsl(var(--foreground))',
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      display: 'block',
+                    }}
                   >
                     Focus on: {c.label}
                   </button>

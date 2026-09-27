@@ -91,9 +91,14 @@ export function analyze(raw: string): AnalysisResult {
   // reads as "several unrelated threads" rather than one messy-but-single
   // situation — a crude proxy for the "multiple unrelated topics" case.
   if (clauses.length >= 3 && distinctSignals >= 2 && text.length > VAGUE_LEN * 3) {
+    // Full clause text, not the truncated titleCase() version — clicking
+    // "Focus on" re-runs analyze() on this label, and a pre-truncated
+    // fragment (with its own trailing "…") starves the second pass of the
+    // keywords it needs, pushing it into the generic idea fallback below.
+    // Visual truncation for the button itself is CSS-only (see App.tsx).
     const threads = clauses.slice(0, 3).map((c, i) => ({
       id: `thread-${i}`,
-      label: titleCase(c),
+      label: c.trim(),
       role: 'core' as const,
     }));
     return {
@@ -122,7 +127,6 @@ export function analyze(raw: string): AnalysisResult {
   else if (PROBLEM_WORDS.test(text)) type = 'problem';
   else if (PROJECT_WORDS.test(text)) type = 'project';
 
-  const words = text.split(/\s+/).filter(Boolean);
   const firstClause = titleCase(clauses[0] ?? text);
   const secondClause = clauses[1] ? titleCase(clauses[1]) : null;
 
@@ -185,13 +189,27 @@ export function analyze(raw: string): AnalysisResult {
     };
   }
 
-  // idea — themes/relationships, no forced next step (matches "Complex idea" output type in the brief)
+  // idea — themes/relationships. A real second clause earns the honest
+  // "no forced next step" treatment (matches "Complex idea" in the brief);
+  // a single thin clause (e.g. after "Focus on" narrows to one fragment)
+  // has nothing distinct to build a second theme from, so said so plainly
+  // instead of faking one out of the same words already used for `core`.
+  if (!secondClause) {
+    return {
+      type,
+      headline: "Here's the one thing in this.",
+      concepts: [{ id: 'core', label: firstClause, role: 'core' }],
+      edges: [],
+      nextStep: "Say what you'd do first if this were the only thing on your plate.",
+    };
+  }
+
   return {
     type,
     headline: "Here's what matters most, and what can wait.",
     concepts: [
       { id: 'core', label: firstClause, role: 'core' },
-      { id: 'theme-a', label: secondClause ?? words.slice(0, 4).join(' '), role: 'factor' },
+      { id: 'theme-a', label: secondClause, role: 'factor' },
       { id: 'theme-b', label: 'Related thread', role: 'factor' },
       { id: 'ignore', label: 'Can wait', role: 'unknown' },
     ],
