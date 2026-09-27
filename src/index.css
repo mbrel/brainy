@@ -1,0 +1,43 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Inter:wght@400;500;600&display=swap');
+
+/*
+ * Same token system as calm-structure-logic (the portfolio): warm neutral
+ * background, near-black foreground, muted mid-gray, a single cool-blue
+ * accent used sparingly. Reused verbatim rather than inventing a new
+ * palette — Brainy is meant to feel like "the wires from the homepage
+ * became a product," not a new brand.
+ */
+:root {
+  --background: 40 7% 95%;
+  --foreground: 220 10% 20%;
+  --muted-foreground: 220 6% 50%;
+  --accent: 215 40% 55%;
+  --card: 40 7% 97%;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: 220 10% 12%;
+    --foreground: 40 7% 92%;
+    --muted-foreground: 220 6% 65%;
+    --accent: 215 55% 65%;
+    --card: 220 10% 16%;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
