@@ -1,46 +1,49 @@
 import { useEffect, useRef, useState } from 'react';
 import WireCanvas, { type Phase } from './components/WireCanvas';
-import { analyze, type AnalysisResult } from './lib/analyze';
-import { getActPosition } from './lib/layout';
+import { analyze } from './lib/analyze';
+import type { AnalysisOutcome } from './lib/graph';
+import type { ForceGraphSim } from './lib/forceGraph';
 
-const PHASE_DURATIONS: Record<Exclude<Phase, 'idle' | 'act'>, number> = {
-  untangle: 1400,
-  group: 1300,
-  simplify: 1100,
-};
-
-const EXAMPLES = ['A decision', 'A messy idea', 'A project', 'A problem'];
-
-const roleTag: Record<string, string> = {
-  core: '',
-  factor: '',
-  risk: 'Risk',
-  unknown: 'Unknown',
-  next: 'Next step',
+// Generous total run before labels are eligible to appear — the actual
+// gate is sim.isSettled() (checked below), this is just a floor so the
+// "untangling / grouping / simplifying" status text doesn't flash by
+// instantly on a graph that happens to settle fast.
+const MIN_PHASE_MS: Record<Exclude<Phase, 'idle' | 'act'>, number> = {
+  untangle: 900,
+  group: 900,
+  simplify: 700,
 };
 
 function App() {
   const [input, setInput] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
-  const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const [outcome, setOutcome] = useState<AnalysisOutcome | null>(null);
+  const [labelsVisible, setLabelsVisible] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-
-  useEffect(() => {
-    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
+  const settleInterval = useRef<ReturnType<typeof setInterval>>();
+  const simRef = useRef<ForceGraphSim | null>(null);
+  const labelRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const rafRef = useRef<number>(0);
 
   const clearTimers = () => {
     timers.current.forEach(clearTimeout);
     timers.current = [];
+    if (settleInterval.current) clearInterval(settleInterval.current);
   };
 
   const runUntangle = (text: string) => {
     if (!text.trim()) return;
     clearTimers();
-    const analysis = analyze(text);
+    setSelectedId(null);
+    setLabelsVisible(false);
+    const result = analyze(text);
+    setOutcome(result);
+
+    if (result.kind === 'unclear') {
+      setPhase('act');
+      return;
+    }
 
     setPhase('untangle');
     timers.current.push(setTimeout(() => {
@@ -48,28 +51,56 @@ function App() {
       timers.current.push(setTimeout(() => {
         setPhase('simplify');
         timers.current.push(setTimeout(() => {
-          setResult(analysis);
           setPhase('act');
-        }, PHASE_DURATIONS.simplify));
-      }, PHASE_DURATIONS.group));
-    }, PHASE_DURATIONS.untangle));
+          // Labels wait for the simulation to actually settle, not a fixed
+          // timer — a graph with more tension takes longer to resolve, and
+          // the labels shouldn't lie about that by appearing early.
+          settleInterval.current = setInterval(() => {
+            if (simRef.current?.isSettled()) {
+              setLabelsVisible(true);
+              if (settleInterval.current) clearInterval(settleInterval.current);
+            }
+          }, 150);
+        }, MIN_PHASE_MS.simplify));
+      }, MIN_PHASE_MS.group));
+    }, MIN_PHASE_MS.untangle));
   };
 
   const startOver = () => {
     clearTimers();
-    setResult(null);
+    setOutcome(null);
     setPhase('idle');
     setInput('');
+    setSelectedId(null);
+    setLabelsVisible(false);
   };
 
+  // Drives label positions directly via the DOM each frame — reading the
+  // live simulation, not React state, so this never fights the physics
+  // loop or re-renders 8 times a second for no reason.
+  useEffect(() => {
+    const tick = () => {
+      const sim = simRef.current;
+      if (sim) {
+        for (const n of sim.nodes) {
+          const el = labelRefs.current.get(n.id);
+          if (el) el.style.transform = `translate(${n.x}px, ${n.y}px) translate(-50%, -50%)`;
+        }
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, []);
+
   const isThinking = phase === 'untangle' || phase === 'group' || phase === 'simplify';
-  const showResult = phase === 'act' && result;
-  const isUnclear = showResult && result.type === 'unclear';
-  const survivors = showResult && !isUnclear ? result.concepts : [];
+  const showResult = phase === 'act' && outcome;
+  const isUnclear = showResult && outcome.kind === 'unclear';
+  const isGraph = showResult && outcome.kind === 'graph';
 
   return (
     <div className="min-h-screen relative">
-      <WireCanvas phase={phase} result={phase === 'act' ? result : null} />
+      <WireCanvas phase={phase} outcome={phase === 'act' || isThinking ? outcome : null} simRef={simRef} />
 
       {phase === 'idle' && (
         <div className="relative z-10 min-h-screen flex flex-col items-center justify-center px-6 py-20">
@@ -129,65 +160,18 @@ function App() {
         </div>
       )}
 
-      {showResult && isUnclear && (
+      {isUnclear && (
         <div className="relative z-10 min-h-screen flex flex-col items-center justify-center px-6 py-20">
           <div className="max-w-md w-full text-center">
             <p
               className="text-2xl md:text-3xl font-light italic leading-snug mb-4"
               style={{ fontFamily: "'Fraunces', serif", color: 'hsl(var(--foreground))' }}
             >
-              {result.headline}
+              {outcome.headline}
             </p>
-            {result.guidance && (
-              <p className="text-sm mb-8" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}>
-                {result.guidance}
-              </p>
-            )}
-
-            {result.concepts.length > 0 ? (
-              <div className="flex flex-col gap-3 mb-8">
-                {result.concepts.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => runUntangle(c.label)}
-                    title={c.label}
-                    className="text-sm rounded-full px-4 py-2 transition-opacity hover:opacity-70"
-                    style={{
-                      fontFamily: "'Inter', sans-serif",
-                      border: '1px solid hsl(var(--foreground) / 0.15)',
-                      color: 'hsl(var(--foreground))',
-                      maxWidth: '100%',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      display: 'block',
-                    }}
-                  >
-                    Focus on: {c.label}
-                  </button>
-                ))}
-                <button
-                  onClick={() => runUntangle(input)}
-                  className="text-sm underline underline-offset-4 mt-2"
-                  style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}
-                >
-                  Untangle everything instead
-                </button>
-              </div>
-            ) : (
-              <div className="flex flex-wrap justify-center gap-2 mb-8">
-                {EXAMPLES.map((ex) => (
-                  <span
-                    key={ex}
-                    className="text-xs uppercase tracking-widest px-3 py-1.5 rounded-full"
-                    style={{ fontFamily: "'Inter', sans-serif", border: '1px solid hsl(var(--foreground) / 0.1)', color: 'hsl(var(--muted-foreground))' }}
-                  >
-                    {ex}
-                  </span>
-                ))}
-              </div>
-            )}
-
+            <p className="text-sm mb-8" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}>
+              {outcome.guidance}
+            </p>
             <button onClick={startOver} className="text-sm underline underline-offset-4" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--foreground))' }}>
               ← Try again
             </button>
@@ -195,64 +179,103 @@ function App() {
         </div>
       )}
 
-      {showResult && !isUnclear && (
+      {isGraph && (
         <div className="relative z-10 min-h-screen flex flex-col">
-          <div className="pt-12 px-6 text-center">
+          <div
+            className="pt-12 px-6 text-center transition-opacity duration-700"
+            style={{ opacity: labelsVisible ? 1 : 0 }}
+          >
             <p
               className="text-xl md:text-2xl font-light italic"
               style={{ fontFamily: "'Fraunces', serif", color: 'hsl(var(--foreground))' }}
             >
-              {result.headline}
+              {outcome.headline}
             </p>
           </div>
 
-          <div className="flex-1 relative">
-            {survivors.map((concept, i) => {
-              const isCore = concept.role === 'core';
-              const pos = getActPosition(i, survivors.length, isCore, viewport.w, viewport.h);
-              const tag = roleTag[concept.role];
+          <div className="flex-1 relative" onClick={() => setSelectedId(null)}>
+            {outcome.graph.concepts.map((concept) => {
+              const isSelected = selectedId === concept.id;
+              const connections = outcome.graph.relationships
+                .filter((r) => r.source === concept.id || r.target === concept.id)
+                .map((r) => (r.source === concept.id ? r.target : r.source))
+                .map((id) => outcome.graph.concepts.find((c) => c.id === id)?.label)
+                .filter(Boolean);
+
               return (
                 <div
                   key={concept.id}
-                  className="absolute -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none"
-                  style={{ left: pos.x, top: pos.y + (isCore ? 14 : 12), maxWidth: 160 }}
+                  ref={(el) => { if (el) labelRefs.current.set(concept.id, el); }}
+                  className="absolute flex flex-col items-center gap-1 transition-opacity duration-700"
+                  style={{ left: 0, top: 0, maxWidth: 150, opacity: labelsVisible ? 1 : 0, zIndex: isSelected ? 20 : 1 }}
                 >
-                  {tag && (
-                    <span
-                      className="text-[10px] uppercase tracking-widest"
-                      style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--accent))' }}
-                    >
-                      {tag}
-                    </span>
-                  )}
                   <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedId(isSelected ? null : concept.id);
+                    }}
                     className="text-sm text-center leading-snug"
                     style={{
-                      fontFamily: isCore ? "'Fraunces', serif" : "'Inter', sans-serif",
-                      fontWeight: isCore ? 500 : 400,
-                      fontSize: isCore ? '17px' : '13px',
+                      fontFamily: "'Inter', sans-serif",
                       color: 'hsl(var(--foreground))',
+                      cursor: 'pointer',
+                      borderBottom: `1px dotted hsl(var(--foreground) / ${isSelected ? '0.6' : '0.3'})`,
+                      pointerEvents: 'auto',
+                      transition: 'border-color 150ms ease',
+                      marginTop: '18px',
                     }}
                   >
                     {concept.label}
                   </span>
+
+                  {isSelected && (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="absolute top-full mt-2 text-left"
+                      style={{
+                        width: 200,
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        background: 'hsl(var(--background))',
+                        border: '1px solid hsl(var(--foreground) / 0.15)',
+                        borderRadius: '8px',
+                        padding: '10px 12px',
+                        boxShadow: '0 4px 20px hsl(var(--foreground) / 0.06)',
+                      }}
+                    >
+                      <p className="text-[10px] uppercase tracking-widest mb-1" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--accent))' }}>
+                        {concept.group}
+                      </p>
+                      {connections.length > 0 ? (
+                        <p className="text-xs leading-relaxed" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}>
+                          Connected to {connections.join(', ')}.
+                        </p>
+                      ) : (
+                        <p className="text-xs leading-relaxed" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}>
+                          Standing on its own — nothing else here pulls on it.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
 
-          <div className="pb-16 px-6 flex flex-col items-center gap-6">
-            <div className="text-center max-w-sm">
-              <p
-                className="text-[10px] uppercase tracking-widest mb-2"
-                style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}
-              >
-                {result.nextStep ? 'Next step' : 'Key unknown'}
-              </p>
-              <p className="text-sm leading-relaxed" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--foreground))' }}>
-                {result.nextStep ?? "There isn't a clean next step yet — that's honest, not a gap in the analysis."}
-              </p>
-            </div>
+          <div
+            className="pb-16 px-6 flex flex-col items-center gap-6 transition-opacity duration-700"
+            style={{ opacity: labelsVisible ? 1 : 0 }}
+          >
+            {outcome.nextStep && (
+              <div className="text-center max-w-sm">
+                <p className="text-[10px] uppercase tracking-widest mb-2" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}>
+                  Worth noticing
+                </p>
+                <p className="text-sm leading-relaxed" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--foreground))' }}>
+                  {outcome.nextStep}
+                </p>
+              </div>
+            )}
             <button onClick={startOver} className="text-sm underline underline-offset-4" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}>
               Start over →
             </button>
