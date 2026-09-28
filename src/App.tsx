@@ -24,6 +24,7 @@ function App() {
   const settleInterval = useRef<ReturnType<typeof setInterval>>();
   const simRef = useRef<ForceGraphSim | null>(null);
   const labelRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const groupLabelRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const rafRef = useRef<number>(0);
 
   const clearTimers = () => {
@@ -85,6 +86,13 @@ function App() {
         for (const n of sim.nodes) {
           const el = labelRefs.current.get(n.id);
           if (el) el.style.transform = `translate(${n.x}px, ${n.y}px) translate(-50%, -50%)`;
+        }
+        // Cluster labels track the live centroid of their own group — as
+        // the physics pulls a group together, its name drifts to sit right
+        // over the middle of the blob it names, not a fixed spot.
+        for (const [group, pos] of sim.groupCentroids()) {
+          const el = groupLabelRefs.current.get(group);
+          if (el) el.style.transform = `translate(${pos.x}px, ${pos.y}px) translate(-50%, -50%)`;
         }
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -194,6 +202,32 @@ function App() {
           </div>
 
           <div className="flex-1 relative" onClick={() => setSelectedId(null)}>
+            {/* Level 2 — cluster names. Bigger and bolder than any single
+                concept label, so the group reads as the main event and
+                individual concepts read as supporting detail underneath it. */}
+            {Array.from(new Set(outcome.graph.concepts.map((c) => c.group))).map((group) => (
+              <div
+                key={group}
+                ref={(el) => { if (el) groupLabelRefs.current.set(group, el); }}
+                className="absolute pointer-events-none transition-opacity duration-700"
+                style={{
+                  left: 0, top: 0,
+                  opacity: labelsVisible ? 1 : 0,
+                  fontFamily: "'Inter', sans-serif",
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  letterSpacing: '0.14em',
+                  textTransform: 'uppercase',
+                  color: 'hsl(var(--accent))',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {group}
+              </div>
+            ))}
+
+            {/* Level 1 — individual concepts. Small and quiet on purpose —
+                the cluster name above is the headline, these are detail. */}
             {outcome.graph.concepts.map((concept) => {
               const isSelected = selectedId === concept.id;
               const connections = outcome.graph.relationships
@@ -214,14 +248,14 @@ function App() {
                       e.stopPropagation();
                       setSelectedId(isSelected ? null : concept.id);
                     }}
-                    className="text-sm text-center leading-snug"
+                    className="text-xs text-center leading-snug"
                     style={{
                       fontFamily: "'Inter', sans-serif",
-                      color: 'hsl(var(--foreground))',
+                      color: `hsl(var(--foreground) / ${isSelected ? '0.9' : '0.55'})`,
                       cursor: 'pointer',
-                      borderBottom: `1px dotted hsl(var(--foreground) / ${isSelected ? '0.6' : '0.3'})`,
+                      borderBottom: `1px dotted hsl(var(--foreground) / ${isSelected ? '0.5' : '0.22'})`,
                       pointerEvents: 'auto',
-                      transition: 'border-color 150ms ease',
+                      transition: 'border-color 150ms ease, color 150ms ease',
                       marginTop: '18px',
                     }}
                   >
@@ -269,7 +303,7 @@ function App() {
             {outcome.nextStep && (
               <div className="text-center max-w-sm">
                 <p className="text-[10px] uppercase tracking-widest mb-2" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--muted-foreground))' }}>
-                  Worth noticing
+                  Try this
                 </p>
                 <p className="text-sm leading-relaxed" style={{ fontFamily: "'Inter', sans-serif", color: 'hsl(var(--foreground))' }}>
                   {outcome.nextStep}

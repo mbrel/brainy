@@ -29,6 +29,56 @@ const hsla = (hsl: string, alpha: number) => {
   return `hsla(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`;
 };
 
+// Deterministic per-string seed, so the same edge always bows the same
+// way frame to frame (and re-render to re-render) instead of jittering.
+function hashSeed(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h) || 1;
+}
+
+/**
+ * A relationship rendered as a stream of thought, not a ruler line: a
+ * quadratic bow (direction/amount seeded per edge, so it's stable, not
+ * random noise every frame) and a width that tapers from thick at the
+ * source to thin at the target — "node → thick wire → tapering wire →
+ * node" rather than a uniform connector. Canvas has no native
+ * variable-width stroke, so this walks the curve in short segments,
+ * interpolating width per segment; round caps hide the seams.
+ */
+function drawOrganicEdge(
+  ctx: CanvasRenderingContext2D,
+  ax: number, ay: number, bx: number, by: number,
+  seed: number, color: string,
+  widthStart: number, widthEnd: number,
+) {
+  const rand = seededRandom(seed);
+  const dx = bx - ax, dy = by - ay;
+  const dist = Math.hypot(dx, dy) || 1;
+  const nx = -dy / dist, ny = dx / dist;
+  const bowSign = rand() > 0.5 ? 1 : -1;
+  const bowAmount = Math.min(dist * 0.16, 70) * (0.4 + rand() * 0.6) * bowSign;
+  const midX = (ax + bx) / 2 + nx * bowAmount;
+  const midY = (ay + by) / 2 + ny * bowAmount;
+
+  const SEGMENTS = 14;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = color;
+  let prevX = ax, prevY = ay;
+  for (let s = 1; s <= SEGMENTS; s++) {
+    const t = s / SEGMENTS;
+    const it = 1 - t;
+    const x = it * it * ax + 2 * it * t * midX + t * t * bx;
+    const y = it * it * ay + 2 * it * t * midY + t * t * by;
+    ctx.lineWidth = widthStart + (widthEnd - widthStart) * t;
+    ctx.beginPath();
+    ctx.moveTo(prevX, prevY);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    prevX = x; prevY = y;
+  }
+}
+
 /**
  * Two layers share this one canvas:
  *
@@ -121,15 +171,15 @@ const WireCanvas = ({ phase, outcome, simRef }: Props) => {
       const fg = css.getPropertyValue('--foreground').trim();
       const accent = css.getPropertyValue('--accent').trim();
 
-      const hasGraph = outcomeNow?.kind === 'graph';
+      const currentGraph = outcomeNow?.kind === 'graph' ? outcomeNow.graph : null;
 
       // (Re)create the simulation exactly once per new graph — scattered
       // start positions, from there physics owns everything.
-      const graphKey = hasGraph ? JSON.stringify(outcomeNow.graph.concepts.map((c) => c.id)) : '';
-      if (hasGraph && graphKey !== simGraphKey) {
+      const graphKey = currentGraph ? JSON.stringify(currentGraph.concepts.map((c) => c.id)) : '';
+      if (currentGraph && graphKey !== simGraphKey) {
         simGraphKey = graphKey;
-        simRef.current = new ForceGraphSim(outcomeNow.graph, vw, vh);
-      } else if (!hasGraph) {
+        simRef.current = new ForceGraphSim(currentGraph, vw, vh);
+      } else if (!currentGraph) {
         simGraphKey = '';
         simRef.current = null;
       }
@@ -184,22 +234,34 @@ const WireCanvas = ({ phase, outcome, simRef }: Props) => {
 
       // The semantic graph — the actual product.
       const sim = simRef.current;
-      if (sim) {
+      if (sim && currentGraph) {
         if (!sim.isSettled()) sim.step(dt);
         const settled = sim.isSettled();
 
-        // Edges: opacity scaled by relationship strength, so weak ties
-        // read as faint and strong ones as clearly drawn — never a
+        // The single strongest relationship becomes the "so what" once the
+        // network has resolved — everything else recedes slightly so this
+        // one reads as the point, not just another edge among many.
+        let strongest: { source: string; target: string } | null = null;
+        if (settled && currentGraph.relationships.length > 0) {
+          const top = currentGraph.relationships.reduce((a, b) => (b.strength > a.strength ? b : a));
+          strongest = { source: top.source, target: top.target };
+        }
+        const pulse = 0.75 + Math.sin(t * 2.4) * 0.25;
+
+        // Edges: organic bowed, tapering strokes — width and opacity both
+        // scaled by relationship strength, so weak ties read as faint
+        // threads and strong ones as clearly drawn streams, never a
         // uniform diagram connector.
-        ctx.lineWidth = settled ? 1 : 0.7;
-        for (const rel of outcomeNow!.graph.relationships) {
+        for (const rel of currentGraph.relationships) {
           if (rel.strength < 0.1) continue;
           const a = sim.nodes.find((n) => n.id === rel.source);
           const b = sim.nodes.find((n) => n.id === rel.target);
           if (!a || !b) continue;
-          const op = 0.15 + rel.strength * 0.55;
-          ctx.strokeStyle = hsla(settled ? accent : fg, op);
-          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+          const isStrongest = strongest && rel.source === strongest.source && rel.target === strongest.target;
+          const op = (0.15 + rel.strength * 0.55) * (isStrongest ? pulse : 1);
+          const baseWidth = 0.6 + rel.strength * (isStrongest ? 4.2 : 3);
+          const color = hsla(settled ? accent : fg, isStrongest ? Math.min(1, op * 1.3) : op);
+          drawOrganicEdge(ctx, a.x, a.y, b.x, b.y, hashSeed(rel.source + rel.target), color, baseWidth * 1.3, baseWidth * 0.45);
         }
 
         ctx.fillStyle = hsla(settled ? accent : fg, 0.9);
