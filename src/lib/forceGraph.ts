@@ -50,8 +50,22 @@ const MAX_SPEED = 400;
 // measured net force of ~9, an order of magnitude above any real
 // resting force). Force magnitude has no such artifact — it's actually
 // zero at equilibrium.
-const SETTLE_FORCE = 2.5; // average |force| per node, below which we call it resolved — "visually stable," not perfect zero-force equilibrium
+//
+// But a hub node with several strong, conflicting-rest-length edges (a
+// concept related to many others) is over-constrained: no position lets
+// every spring reach its rest length at once, so there's a genuine,
+// permanent residual force even once the node has visibly stopped moving
+// (confirmed directly: a real 6-node/3-group graph sat at avgForce ~3.15
+// forever, with node drift under half a pixel per second — a perfectly
+// still graph that the original 2.5 threshold would never call settled).
+// Raised to tolerate that residual.
+const SETTLE_FORCE = 4.5; // average |force| per node, below which we call it resolved — "visually stable," not perfect zero-force equilibrium
 const SETTLE_FRAMES = 40; // consecutive low-force frames required — guards against a transient lull mid-motion
+// Hard fallback: whatever the force-based check is doing, never let a
+// graph withhold its labels forever. An over-constrained topology worse
+// than the one above could sit above SETTLE_FORCE indefinitely despite
+// being visually motionless — this guarantees the UI still resolves.
+const SETTLE_TIMEOUT_S = 6;
 
 export class ForceGraphSim {
   nodes: NodeState[] = [];
@@ -61,6 +75,7 @@ export class ForceGraphSim {
   private vh: number;
   private slowFrameCount = 0;
   private settled = false;
+  private elapsed = 0;
 
   constructor(graph: SemanticGraph, vw: number, vh: number, seed = 1) {
     this.vw = vw;
@@ -147,6 +162,7 @@ export class ForceGraphSim {
 
   step(dt: number) {
     if (this.settled) return; // frozen — a resolved structure should hold still, not idle-jitter forever
+    this.elapsed += dt;
     const n = this.nodes;
     const fx = new Float64Array(n.length);
     const fy = new Float64Array(n.length);
@@ -238,7 +254,7 @@ export class ForceGraphSim {
       }
     }
 
-    if (avgForce < SETTLE_FORCE) {
+    if (avgForce < SETTLE_FORCE || this.elapsed >= SETTLE_TIMEOUT_S) {
       this.slowFrameCount++;
       if (this.slowFrameCount >= SETTLE_FRAMES) this.settled = true;
     } else {
